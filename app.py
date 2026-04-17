@@ -2,64 +2,141 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 from datetime import datetime
-import os
+import uuid
+import database
 
 app = Flask(__name__)
 CORS(app)
 
-@app.route('/api/classify', methods=['GET'])
-def classify():
-    name = request.args.get('name')
+# Initialize database on startup
+database.init_db()
+
+def get_age_group(age):
+    if age <= 12:
+        return 'child'
+    elif age <= 19:
+        return 'teenager'
+    elif age <= 59:
+        return 'adult'
+    else:
+        return 'senior'
+
+@app.route('/api/profiles', methods=['POST'])
+def create_profile():
+    data = request.get_json()
     
-    if not name:
-        return jsonify({
-            'status': 'error',
-            'message': 'Name parameter is required'
-        }), 400
+    if not data or not data.get('name'):
+        return jsonify({'status': 'error', 'message': 'Missing or empty name'}), 400
+    
+    name = data['name'].strip()
     
     if not isinstance(name, str):
-        return jsonify({
-            'status': 'error',
-            'message': 'Name parameter must be a string'
-        }), 422
+        return jsonify({'status': 'error', 'message': 'Invalid type'}), 422
     
+    # Check if profile already exists
+    existing = database.get_profile_by_name(name)
+    if existing:
+        return jsonify({
+            'status': 'success',
+            'message': 'Profile already exists',
+            'data': dict(existing)
+        }), 200
+    
+    # Call all three APIs
     try:
-        response = requests.get(f'http://api.genderize.io/?name={name}')
-        data = response.json()
+        gender_response = requests.get(f'https://api.genderize.io/?name={name}')
+        gender_data = gender_response.json()
+        
+        if not gender_data.get('gender') or gender_data.get('count') == 0:
+            return jsonify({'status': 'error', 'message': 'Genderize returned an invalid response'}), 502
+        
+        age_response = requests.get(f'https://api.agify.io/?name={name}')
+        age_data = age_response.json()
+        
+        if age_data.get('age') is None:
+            return jsonify({'status': 'error', 'message': 'Agify returned an invalid response'}), 502
+        
+        country_response = requests.get(f'https://api.nationalize.io/?name={name}')
+        country_data = country_response.json()
+        
+        if not country_data.get('country'):
+            return jsonify({'status': 'error', 'message': 'Nationalize returned an invalid response'}), 502
+        
     except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': 'Cannot reach Genderize API'
-        }), 502
+        return jsonify({'status': 'error', 'message': f'External API error: {str(e)}'}), 502
     
-    if data.get('gender') is None or data.get('count') == 0:
-        return jsonify({
-            'status': 'error',
-            'message': 'No prediction available for the provided name'
-        })
+    # Process the data
+    country_info = country_data['country'][0]
+    age_group = get_age_group(age_data['age'])
     
-    is_confident = (data['probability'] >= 0.7 and data['count'] >= 100)
-    processed_at = datetime.utcnow().isoformat() + 'Z'
+    profile = {
+        'id': str(uuid.uuid4()),
+        'name': name.lower(),
+        'gender': gender_data['gender'],
+        'gender_probability': gender_data['probability'],
+        'sample_size': gender_data['count'],
+        'age': age_data['age'],
+        'age_group': age_group,
+        'country_id': country_info['country_id'],
+        'country_probability': country_info['probability'],
+        'created_at': datetime.utcnow().isoformat() + 'Z'
+    }
+    
+    # Save to database
+    database.save_profile(profile)
     
     return jsonify({
         'status': 'success',
-        'data': {
-            'name': name,
-            'gender': data['gender'],
-            'probability': data['probability'],
-            'sample_size': data['count'],
-            'is_confident': is_confident,
-            'processed_at': processed_at
-        }
-    })
+        'data': profile
+    }), 201
 
-@app.route('/', methods=['GET'])
-def home():
+@app.route('/api/profiles/<profile_id>', methods=['GET'])
+def get_profile(profile_id):
+    profile = database.get_profile_by_id(profile_id)
+    
+    if not profile:
+        return jsonify({'status': 'error', 'message': 'Profile not found'}), 404
+    
     return jsonify({
-        'message': 'Gender API is running',
-        'endpoint': '/api/classify?name=john'
-    })
+        'status': 'success',
+        'data': dict(profile)
+    }), 200
+
+@app.route('/api/profiles', methods=['GET'])
+def get_all_profiles():
+    gender = request.args.get('gender')
+    country_id = request.args.get('country_id')
+    age_group = request.args.get('age_group')
+    
+    filters = {}
+    if gender:
+        filters['gender'] = gender
+    if country_id:
+        filters['country_id'] = country_id
+    if age_group:
+        filters['age_group'] = age_group
+    
+    profiles = database.get_all_profiles(filters)
+    
+    # Convert to list of dicts
+    profiles_list = [dict(profile) for profile in profiles]
+    
+    return jsonify({
+        'status': 'success',
+        'count': len(profiles_list),
+        'data': profiles_list
+    }), 200
+
+@app.route('/api/profiles/<profile_id>', methods=['DELETE'])
+def delete_profile(profile_id):
+    profile = database.get_profile_by_id(profile_id)
+    
+    if not profile:
+        return jsonify({'status': 'error', 'message': 'Profile not found'}), 404
+    
+    database.delete_profile(profile_id)
+    
+    return '', 204
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 3000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=3000)
