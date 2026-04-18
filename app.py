@@ -117,8 +117,6 @@ def get_all_profiles():
         filters['age_group'] = age_group
     
     profiles = database.get_all_profiles(filters)
-    
-    # Convert to list of dicts
     profiles_list = [dict(profile) for profile in profiles]
     
     return jsonify({
@@ -137,6 +135,21 @@ def delete_profile(profile_id):
     database.delete_profile(profile_id)
     
     return '', 204
+
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        'message': 'Gender Profile API is running',
+        'endpoints': {
+            'POST /api/profiles': 'Create a profile',
+            'GET /api/profiles': 'Get all profiles',
+            'GET /api/profiles/{id}': 'Get a single profile',
+            'DELETE /api/profiles/{id}': 'Delete a profile'
+        }
+    })
+
+# This is for Vercel
+app = app
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=3000)

@@ -1,8 +1,14 @@
 import sqlite3
-import uuid
+import os
+
+# Different paths for local vs Vercel
+if os.environ.get('VERCEL'):
+    DB_PATH = '/tmp/profiles.db'
+else:
+    DB_PATH = 'profiles.db'
 
 def get_db():
-    conn = sqlite3.connect('profiles.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
